@@ -1,0 +1,175 @@
+#!/bin/bash
+
+# Function to show our help message
+usage() {
+    echo "bbsum - A hash program that outputs Bubble Babble formatted hashes."
+    echo ""
+    echo "Usage: $0 [OPTIONS] [FILES]"
+    echo ""
+    echo "Options:"
+    echo "  -c FILE      Check a file of Bubble Babble hashes"
+    echo "  -a HASHER    Use a different hash algorithm (default: sha256sum)"
+    echo "  -i           Install required dependencies"
+    echo ""
+    echo "The command-line is passed to the standard hash function."
+    echo "This tool wraps standard hash functions (e.g., sha256sum) and converts"
+    echo "the output into Bubble Babble encoding."
+    echo ""
+    echo "The output format follows 'sha256sum' but is Bubble Babble encoded."
+    echo ""
+    echo "For more details on the underlying hasher, see its help output below:"
+    echo ""
+}
+
+install_dependencies() {
+    echo "Checking and installing dependencies..."
+    local missing=0
+
+    if ! command -v perl &>/dev/null; then
+        echo "Perl not found! Installing..."
+        sudo apt update && sudo apt install -y perl || missing=1
+    else
+        echo "Perl is already installed."
+    fi
+
+    if ! perl -MDigest::BubbleBabble -e 'exit 0' 2>/dev/null; then
+        echo "Perl module Digest::BubbleBabble not found! Installing..."
+        sudo apt install -y libdigest-bubblebabble-perl || missing=1
+    else
+        echo "Perl module Digest::BubbleBabble is already installed."
+    fi
+
+    if ! command -v sha256sum &>/dev/null; then
+        echo "sha256sum not found! Installing..."
+        sudo apt update && sudo apt install -y coreutils || missing=1
+    else
+        echo "sha256sum is already installed."
+    fi
+
+    if [[ "$missing" -eq 0 ]]; then
+        echo "All dependencies installed successfully!"
+    else
+        echo "Some dependencies failed to install. Please check your package manager settings."
+        exit 1
+    fi
+}
+
+hash_bubblebabble() {
+    local hash_cmd="$1"
+    shift
+
+    # Read the hash function's output and process each line
+    "$hash_cmd" "$@" | while IFS= read -r line; do
+        hash_value=$(echo "$line" | awk '{print $1}')
+        filename=$(echo "$line" | cut -d ' ' -f2-)
+
+        # Ensure we have a valid filename
+        if [[ -z "$filename" ]]; then
+            filename="-"
+        fi
+
+        # Correct Bubble Babble conversion
+        perl -MDigest::BubbleBabble=bubblebabble -e '
+            use strict;
+            use warnings;
+            my $hex_hash = shift;
+            my $binary_hash = pack("H*", $hex_hash);
+            print bubblebabble(Digest => $binary_hash), "  ", $ARGV[0], "\n";
+        ' "$hash_value" "$filename"
+    done
+}
+
+check_hashes() {
+    local hashfile="$1"
+    shift
+    local hash_cmd="$@"
+
+    local errors=0
+
+    while IFS= read -r line; do
+        expected_hash=$(echo "$line" | awk '{print $1}')
+        filename=$(echo "$line" | awk '{$1=""; print $0}' | sed 's/^ *//')
+
+        # Strip leading "*" if binary mode was used
+        filename="${filename#\*}"
+
+        # Check if file exists
+        if [[ ! -f "$filename" ]]; then
+            echo "$filename: No such file"
+            errors=1
+            continue
+        fi
+
+        # Compute the actual Bubble Babble hash
+        actual_hash=$(hash_bubblebabble "$hash_cmd" "$filename" | awk '{print $1}')
+
+        if [[ "$expected_hash" == "$actual_hash" ]]; then
+            echo "$filename: OK"
+        else
+            echo "$filename: FAILED"
+            errors=1
+        fi
+    done < "$hashfile"
+
+    exit $errors
+}
+
+# Default values
+hash_cmd="sha256sum"
+install_mode=0
+check_mode=0
+check_file=""
+
+# Parse options
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -i)
+            install_mode=1
+            shift
+            ;;
+        -c)
+            check_mode=1
+            check_file="$2"
+            shift 2
+            ;;
+        -a)
+            hash_cmd="$2"
+            shift 2
+            ;;
+        --help)
+            usage
+            "$hash_cmd" --help
+            exit 0
+            ;;
+        *)
+            break  # Remaining arguments are passed to hash command
+            ;;
+    esac
+done
+
+
+# Run installation if requested
+if [[ "$install_mode" -eq 1 ]]; then
+    install_dependencies
+    exit 0
+fi
+
+# Check mode
+if [[ "$check_mode" -eq 1 ]]; then
+    if [[ -z "$check_file" ]]; then
+        echo "Error: -c requires a file argument"
+        exit 1
+    fi
+    check_hashes "$check_file" "$hash_cmd" "$@"
+    exit
+fi
+
+# If no arguments are given, read from stdin
+if [[ $# -eq 0 ]]; then
+    hash_bubblebabble "$hash_cmd"
+    exit 0
+fi
+
+# Otherwise, forward all arguments to the underlying hash function
+hash_bubblebabble "$hash_cmd" "$@"
+
